@@ -68,10 +68,19 @@ function Update-Icon {
 # The BIOS doesn't report the mode, so start from a known state: Auto.
 Set-FullSpeed $false
 
-# Refresh RPM in the tooltip every 3 s
+# Poll RPM every 1 s. While in full speed, re-send DEVS 1 every 5 s: the firmware
+# can silently drop back to auto (sleep/resume, power mode change) and there's no
+# way to read the mode back, only the RPM.
+$script:tick = 0
 $timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 3000
-$timer.add_Tick({ Update-Icon })
+$timer.Interval = 1000
+$timer.add_Tick({
+    $script:tick++
+    if ($script:full -and ($script:tick % 5 -eq 0)) {
+        try { $wmi.DEVS($DeviceId, 1) | Out-Null } catch {}
+    }
+    Update-Icon
+})
 $timer.Start()
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip

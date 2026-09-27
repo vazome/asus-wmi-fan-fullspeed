@@ -41,7 +41,8 @@ $w = Get-WmiObject -Namespace root\wmi -Class AsusAtkWmi_WMNB
 ## Usage
 
 - **Left-click** the tray dot to toggle — green = full speed, grey = Auto.
-- **Hover** to see current fan RPM (refreshes every 3 s).
+- **Hover** to see current fan RPM (polled every 1 s; move the pointer off and back to refresh an open tooltip).
+- While in full speed, the app re-sends the full-speed command every 5 s, because the firmware can silently fall back to Auto (e.g. after sleep) and the mode can't be read back.
 - **Right-click** for Full speed / Auto / Exit. Exiting returns the fan to Auto.
 - The app always starts in Auto, since the firmware doesn't report the current fan mode.
 
