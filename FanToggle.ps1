@@ -1,9 +1,10 @@
 # FanToggle - tray icon that toggles the ASUS CPU fan (0x00110013) between
 # full speed (DEVS 1) and BIOS auto control (DEVS 0) via ATK WMI.
 # Left-click the icon to toggle. Right-click for Full speed / Auto / Exit.
-# Hover to see current RPM. Exiting puts the fan back on Auto.
+# Hover to see current CPU (and GPU, if present) RPM. Exiting puts the fan back on Auto.
 
-$DeviceId = 0x00110013
+$DeviceId    = 0x00110013   # CPU fan control (full speed / auto)
+$GpuFanId    = 0x00110014   # GPU fan - read-only here (DEVS is ignored on UX8402VV)
 
 # --- Self-elevate if not admin -------------------------------------------------
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
@@ -22,9 +23,14 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
 $wmi = Get-WmiObject -Namespace 'root\wmi' -Class 'AsusAtkWmi_WMNB'
 
-function Get-FanRpm {
+function Get-FanRpm([uint32]$id) {
     # DSTS low 16 bits = fan speed in units of 100 RPM (e.g. 0x10038 -> 56 -> 5600).
-    try { return ($wmi.DSTS($DeviceId).device_status -band 0xFFFF) * 100 } catch { return $null }
+    # $null if the device isn't present (presence bit 0x10000 clear).
+    try {
+        $s = $wmi.DSTS($id).device_status
+        if (-not ($s -band 0x10000)) { return $null }
+        return ($s -band 0xFFFF) * 100
+    } catch { return $null }
 }
 
 function Set-FullSpeed([bool]$full) {
@@ -50,8 +56,11 @@ $tray = New-Object System.Windows.Forms.NotifyIcon
 $tray.Visible = $true
 
 function Update-Icon {
-    $rpm  = Get-FanRpm
-    $rpmS = if ($null -ne $rpm) { " - $rpm RPM" } else { '' }
+    $cpu  = Get-FanRpm $DeviceId
+    $gpu  = Get-FanRpm $GpuFanId
+    $rpmS = if ($null -eq $cpu) { '' }
+            elseif ($null -eq $gpu) { " - $cpu RPM" }
+            else { " - CPU $cpu / GPU $gpu RPM" }
     if ($script:full) { $tray.Icon = $iconFull; $tray.Text = "Fan: FULL SPEED$rpmS" }
     else              { $tray.Icon = $iconAuto; $tray.Text = "Fan: AUTO$rpmS" }
 }
