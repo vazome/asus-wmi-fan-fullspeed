@@ -1,0 +1,87 @@
+# FanToggle - tray icon that toggles the ASUS CPU fan (0x00110013) between
+# full speed (DEVS 1) and BIOS auto control (DEVS 0) via ATK WMI.
+# Left-click the icon to toggle. Right-click for Full speed / Auto / Exit.
+# Hover to see current RPM. Exiting puts the fan back on Auto.
+
+$DeviceId = 0x00110013
+
+# --- Self-elevate if not admin -------------------------------------------------
+$principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden `
+        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`""
+    exit
+}
+
+# --- Single instance -----------------------------------------------------------
+$created = $false
+$mutex = New-Object System.Threading.Mutex($true, 'Global\FanToggleTray', [ref]$created)
+if (-not $created) { exit }
+
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+
+$wmi = Get-WmiObject -Namespace 'root\wmi' -Class 'AsusAtkWmi_WMNB'
+
+function Get-FanRpm {
+    # DSTS low 16 bits = fan speed in units of 100 RPM (e.g. 0x10038 -> 56 -> 5600).
+    try { return ($wmi.DSTS($DeviceId).device_status -band 0xFFFF) * 100 } catch { return $null }
+}
+
+function Set-FullSpeed([bool]$full) {
+    $wmi.DEVS($DeviceId, [uint32]$full) | Out-Null
+    $script:full = $full
+    Update-Icon
+}
+
+function New-DotIcon([System.Drawing.Color]$color) {
+    $bmp = New-Object System.Drawing.Bitmap 32, 32
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = 'AntiAlias'
+    $g.FillEllipse((New-Object System.Drawing.SolidBrush $color), 3, 3, 26, 26)
+    $g.DrawEllipse((New-Object System.Drawing.Pen ([System.Drawing.Color]::White), 2), 3, 3, 26, 26)
+    $g.Dispose()
+    [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+}
+
+$iconFull = New-DotIcon ([System.Drawing.Color]::FromArgb(40, 180, 80))
+$iconAuto = New-DotIcon ([System.Drawing.Color]::FromArgb(120, 120, 120))
+
+$tray = New-Object System.Windows.Forms.NotifyIcon
+$tray.Visible = $true
+
+function Update-Icon {
+    $rpm  = Get-FanRpm
+    $rpmS = if ($null -ne $rpm) { " - $rpm RPM" } else { '' }
+    if ($script:full) { $tray.Icon = $iconFull; $tray.Text = "Fan: FULL SPEED$rpmS" }
+    else              { $tray.Icon = $iconAuto; $tray.Text = "Fan: AUTO$rpmS" }
+}
+
+# The BIOS doesn't report the mode, so start from a known state: Auto.
+Set-FullSpeed $false
+
+# Refresh RPM in the tooltip every 3 s
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 3000
+$timer.add_Tick({ Update-Icon })
+$timer.Start()
+
+$menu = New-Object System.Windows.Forms.ContextMenuStrip
+$menu.Items.Add('Full speed', $null, { Set-FullSpeed $true })  | Out-Null
+$menu.Items.Add('Auto',       $null, { Set-FullSpeed $false }) | Out-Null
+$menu.Items.Add('-') | Out-Null
+$menu.Items.Add('Exit (back to Auto)', $null, {
+    Set-FullSpeed $false
+    $tray.Visible = $false
+    [System.Windows.Forms.Application]::Exit()
+}) | Out-Null
+$tray.ContextMenuStrip = $menu
+
+$tray.add_MouseClick({
+    param($s, $e)
+    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Set-FullSpeed (-not $script:full) }
+})
+
+[System.Windows.Forms.Application]::Run()
+$timer.Stop()
+$tray.Dispose()
+$mutex.ReleaseMutex()
