@@ -19,6 +19,15 @@ $created = $false
 $mutex = New-Object System.Threading.Mutex($true, 'Global\FanToggleTray', [ref]$created)
 if (-not $created) { exit }
 
+# --- DPI awareness -------------------------------------------------------------
+# powershell.exe isn't DPI-aware, so Windows bitmap-stretches its UI (blurry menu
+# and icon on scaled displays). Opt in to per-monitor v2 before any UI is created.
+Add-Type -Namespace Win32 -Name Dpi -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+'@
+if (-not [Win32.Dpi]::SetProcessDpiAwarenessContext([IntPtr]-4)) { [void][Win32.Dpi]::SetProcessDPIAware() }
+
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
 $wmi = Get-WmiObject -Namespace 'root\wmi' -Class 'AsusAtkWmi_WMNB'
@@ -40,11 +49,16 @@ function Set-FullSpeed([bool]$full) {
 }
 
 function New-DotIcon([System.Drawing.Color]$color) {
-    $bmp = New-Object System.Drawing.Bitmap 32, 32
+    # Draw at the tray's actual pixel size (16 px at 100 %, 24 at 150 %, ...) so it isn't resampled.
+    $sz  = [System.Windows.Forms.SystemInformation]::SmallIconSize.Width
+    $pad = [math]::Max(1, [int]($sz / 8))
+    $d   = $sz - 2 * $pad - 1
+    $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::White), ([float][math]::Max(1.0, $sz / 16.0))
+    $bmp = New-Object System.Drawing.Bitmap $sz, $sz
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.SmoothingMode = 'AntiAlias'
-    $g.FillEllipse((New-Object System.Drawing.SolidBrush $color), 3, 3, 26, 26)
-    $g.DrawEllipse((New-Object System.Drawing.Pen ([System.Drawing.Color]::White), 2), 3, 3, 26, 26)
+    $g.FillEllipse((New-Object System.Drawing.SolidBrush $color), $pad, $pad, $d, $d)
+    $g.DrawEllipse($pen, $pad, $pad, $d, $d)
     $g.Dispose()
     [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
 }
@@ -61,9 +75,25 @@ function Update-Icon {
     $rpmS = if ($null -eq $cpu) { '' }
             elseif ($null -eq $gpu) { " - $cpu RPM" }
             else { " - CPU $cpu / GPU $gpu RPM" }
-    if ($script:full) { $tray.Icon = $iconFull; $tray.Text = "Fan: FULL SPEED$rpmS" }
-    else              { $tray.Icon = $iconAuto; $tray.Text = "Fan: AUTO$rpmS" }
+    $icon = if ($script:full) { $iconFull } else { $iconAuto }
+    if ($tray.Icon -ne $icon) { $tray.Icon = $icon }
+    $tray.Text = if ($script:full) { "Fan: FULL SPEED$rpmS" } else { "Fan: AUTO$rpmS" }
+    $miFull.Checked = $script:full
+    $miAuto.Checked = -not $script:full
 }
+
+# Native Win32 menu (WinForms ContextMenu, not ContextMenuStrip) so Windows 11
+# draws it with the system style - rounded, themed, crisp - like PowerToys' menus.
+# ContextMenu/MenuItem exist in .NET Framework, i.e. Windows PowerShell 5.1.
+$miFull = New-Object System.Windows.Forms.MenuItem 'Full speed', { Set-FullSpeed $true }
+$miAuto = New-Object System.Windows.Forms.MenuItem 'Auto',       { Set-FullSpeed $false }
+$miExit = New-Object System.Windows.Forms.MenuItem 'Exit (back to Auto)', {
+    Set-FullSpeed $false
+    $tray.Visible = $false
+    [System.Windows.Forms.Application]::Exit()
+}
+$tray.ContextMenu = New-Object System.Windows.Forms.ContextMenu (,[System.Windows.Forms.MenuItem[]]@(
+    $miFull, $miAuto, (New-Object System.Windows.Forms.MenuItem '-'), $miExit))
 
 # The BIOS doesn't report the mode, so start from a known state: Auto.
 Set-FullSpeed $false
@@ -82,17 +112,6 @@ $timer.add_Tick({
     Update-Icon
 })
 $timer.Start()
-
-$menu = New-Object System.Windows.Forms.ContextMenuStrip
-$menu.Items.Add('Full speed', $null, { Set-FullSpeed $true })  | Out-Null
-$menu.Items.Add('Auto',       $null, { Set-FullSpeed $false }) | Out-Null
-$menu.Items.Add('-') | Out-Null
-$menu.Items.Add('Exit (back to Auto)', $null, {
-    Set-FullSpeed $false
-    $tray.Visible = $false
-    [System.Windows.Forms.Application]::Exit()
-}) | Out-Null
-$tray.ContextMenuStrip = $menu
 
 $tray.add_MouseClick({
     param($s, $e)
