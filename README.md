@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/tray-tooltip.png" alt="Tray tooltip: Fan: FULL SPEED - CPU 9800 / GPU 4800 RPM" width="353">
+</p>
+
 # asus-wmi-fan-fullspeed
 
 A tiny Windows tray app that switches an ASUS laptop's **CPU fan** between **full speed** and **Auto** (BIOS control) with one click, instead of running WMI calls from an admin PowerShell every time.
